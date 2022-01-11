@@ -9,13 +9,14 @@ import {
 } from '@loopback/rest';
 
 const puppeteer = require('puppeteer');
+// @ts-ignore
 import {Browser, ElementHandle, Page, SetCookie} from 'puppeteer';
 import cookiesJson from "./twitter-cookies.json";
 import config from "./twitter-config.json";
 import * as fs from "fs";
 
 
-export class ScrapeTwitterController {
+export class TwitterController {
 
   public browser: Browser;
   public page: Page;
@@ -23,7 +24,7 @@ export class ScrapeTwitterController {
   constructor(@inject(RestBindings.Http.REQUEST) private req: Request) {
   }
 
-  @post('/scrape/twitter/tweet/')
+  @post('/twitter/tweet/')
   postTweet(
       @requestBody({description: 'Sends the provided string as a tweet'}) tweet: string,
   ): object {
@@ -49,7 +50,7 @@ export class ScrapeTwitterController {
     })();
   }
 
-  @post('/scrape/twitter/tweet/newDonation/')
+  @post('/twitter/tweet/newDonation/')
   postTweetNewDonation(
       @requestBody({
         description: 'Tweets the details of a new donation as a thank you message',

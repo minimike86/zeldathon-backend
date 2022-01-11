@@ -8,7 +8,8 @@ import {
 } from '@loopback/rest';
 
 const puppeteer = require('puppeteer');
-import {BoundingBox, Browser, ElementHandle, errors, Page, SetCookie} from 'puppeteer';
+// @ts-ignore
+import {BoundingBox, Browser, ElementHandle, Page, SetCookie} from 'puppeteer';
 
 const imageDataURI = require('image-data-uri');
 
@@ -20,7 +21,7 @@ import cookiesJson from './facebook-cookies.json';
 /**
  * A simple controller to scrape facebook data from fundraising page
  */
-export class ScrapeFacebookFundraiserController {
+export class FacebookFundraiserController {
 
   public browser: Browser;
   public page: Page;
@@ -28,7 +29,7 @@ export class ScrapeFacebookFundraiserController {
   constructor(@inject(RestBindings.Http.REQUEST) private req: Request) {
   }
 
-  @get('/scrape/facebook/fundraiser/{facebookFundraiserId}')
+  @get('/facebook/fundraiser/{facebookFundraiserId}')
   scrapeFacebookFundraiser(
     @param.path.number('facebookFundraiserId', {
       description: 'Unique Facebook Fundraiser Id',
@@ -38,93 +39,109 @@ export class ScrapeFacebookFundraiserController {
     }) facebookFundraiserId: number,
   ): object {
     return (async () => {
-      await this.launchBrowser();
-      await this.loginIfRequired();
+      try {
 
-      // load donation page
-      await this.page.goto(`https://www.facebook.com/donate/${facebookFundraiserId}/`, {waitUntil: 'networkidle2'});
+        await this.launchBrowser();
+        await this.loginIfRequired();
 
-      // get progress_card
-      const progressCard = await this.getProgressCard();
+        // load donation page
+        await this.page.goto(`https://www.facebook.com/donate/${facebookFundraiserId}/`, {waitUntil: 'networkidle2'});
 
-      // get uniqueDonorCount
-      const uniqueDonorCount: number = await this.getUniqueDonorCount();
+        // get progress_card
+        const progressCard = await this.getProgressCard();
 
-      // render all the lazy loaded content in the page from infinite scroll
-      let previousHeight;
-      while (true) {
-        try {
-          previousHeight = await this.page.evaluate('document.body.scrollHeight');
-          await this.page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
-          await this.page.waitForFunction(`document.body.scrollHeight > ${previousHeight}`);
-        } catch (e) {
-          console.log('Scrolled to end of donation feed');
-          break;
+        // get uniqueDonorCount
+        const uniqueDonorCount: number = await this.getUniqueDonorCount();
+
+        // render all the lazy loaded content in the page from infinite scroll
+        let previousHeight;
+        while (true) {
+          try {
+            previousHeight = await this.page.evaluate('document.body.scrollHeight');
+            await this.page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+            await this.page.waitForFunction(`document.body.scrollHeight > ${previousHeight}`);
+          } catch (e) {
+            console.log('Scrolled to end of donation feed');
+            break;
+          }
         }
+
+        // get each donation
+        const facebookDonations: FacebookDonation[] = [];
+
+        await this.page.waitForXPath('//div[@role=\'feed\']/div[position()>2]', {timeout: 2000});
+        const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role=\'feed\']/div[position()>2]');
+        console.log(`Grabbing ${facebookDonationElems.length} donations:`);
+        for (let i = 0; i < facebookDonationElems.length; i++) {
+          await facebookDonationElems[i].click(); // scroll to element
+
+          // Capture name and amount div
+          const nameAmount = await this.captureNameAmount(facebookDonationElems, i);
+          const name: string = nameAmount.trim().slice(0, -1).split('donated £')[0];
+          const currency: string = 'GBP';
+          const amount: number = parseFloat(nameAmount.trim().slice(0, -1).split('donated £')[1]);
+          console.log('nameAmount:', nameAmount, name, amount);
+
+          // Capture the profile url
+          const profileUrl: string = await this.captureProfileUrl(facebookDonationElems, i);
+          console.log('profileUrl:', profileUrl);
+
+          // Capture the imgSrc url
+          const imgDataUri: string = await this.captureImgDataUri(facebookDonationElems, i);
+          // console.log('imgDataUri:', imgDataUri);
+
+          // Capture date div (from tooltip as greater detail includes time)
+          const exactDateTime: Date = await this.captureExactDateTime(facebookDonationElems, i);
+          console.log('exactDateTime:', exactDateTime);
+
+          // Capture the donation url / id
+          // const donationId: number = await this.captureDonationId(facebookDonationElems, i);
+          // console.log('donationId:', donationId);
+
+          // capture message
+          const donationMessage: string = await this.captureDonationMessage(i);
+          console.log('donationMessage:', donationMessage);
+
+          // push donation date to array
+          facebookDonations.push({
+            name: name,
+            currency: currency,
+            amount: amount,
+            profileUrl: profileUrl,
+            imgDataUri: imgDataUri,
+            date: exactDateTime,
+            message: donationMessage
+          });
+
+        }
+
+        console.log('scrape complete');
+        await this.browser.close();
+        return {
+          progressCard: progressCard,
+          uniqueDonorCount: uniqueDonorCount,
+          donations: facebookDonations
+        };
+
+      } catch (err) {
+
+        console.log(err);
+        return {
+          progressCard: {
+            total: 0,
+            goal: 0
+          },
+          uniqueDonorCount: 0,
+          donations: []
+        };
+
       }
 
-      // get each donation
-      const facebookDonations: FacebookDonation[] = [];
-
-      await this.page.waitForXPath('//div[@role=\'feed\']/div[position()>2]');
-      const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role=\'feed\']/div[position()>2]');
-      console.log(`Grabbing ${facebookDonationElems.length} donations:`);
-      for (let i=0; i<facebookDonationElems.length; i++) {
-        await facebookDonationElems[i].click(); // scroll to element
-
-        // Capture the donation url / id
-        const donationId: number = await this.captureDonationId(facebookDonationElems, i);
-        console.log('donationId:', donationId);
-
-        // Capture name and amount div
-        const nameAmount = await this.captureNameAmount(facebookDonationElems, i);
-        const name: string = nameAmount.trim().slice(0, -1).split('donated £')[0];
-        const currency: string = 'GBP';
-        const amount: number = parseFloat(nameAmount.trim().slice(0, -1).split('donated £')[1]);
-        console.log('nameAmount:', nameAmount, name, amount);
-
-        // Capture the profile url
-        const profileUrl: string = await this.captureProfileUrl(facebookDonationElems, i);
-        console.log('profileUrl:', profileUrl);
-
-        // Capture the imgSrc url
-        const imgDataUri: string = await this.captureImgDataUri(facebookDonationElems, i);
-        // console.log('imgDataUri:', imgDataUri);
-
-        // Capture date div (from tooltip as greater detail includes time)
-        const exactDateTime: Date = await this.captureExactDateTime(facebookDonationElems, i);
-        console.log('exactDateTime:', exactDateTime);
-
-        // capture message
-        const donationMessage: string = await this.captureDonationMessage(i);
-        console.log('donationMessage:', donationMessage);
-
-        // push donation date to array
-        facebookDonations.push({
-          id: donationId,
-          name: name,
-          currency: currency,
-          amount: amount,
-          profileUrl: profileUrl,
-          imgDataUri: imgDataUri,
-          date: exactDateTime,
-          message: donationMessage
-        });
-
-      }
-
-      console.log('scrape complete');
-      await this.browser.close();
-      return {
-        progressCard: progressCard,
-        uniqueDonorCount: uniqueDonorCount,
-        donations: facebookDonations
-      };
     })();
   }
 
   // //a[contains(@href, "10156747884061191") and parent::span]
-  @post('/scrape/facebook/fundraiser/{facebookFundraiserId}/{donationId}/{reaction}')
+  @post('/facebook/fundraiser/{facebookFundraiserId}/{donationId}/{reaction}')
   reactToDonation(
     @param.path.number('facebookFundraiserId', {
       description: 'Unique Facebook Fundraiser Id',
@@ -146,79 +163,90 @@ export class ScrapeFacebookFundraiserController {
     }) reaction: string,
   ): object {
     return (async () => {
-      await this.launchBrowser();
-      await this.loginIfRequired();
 
-      // load donation page
-      await this.page.goto(`https://www.facebook.com/donate/${facebookFundraiserId}/${donationId}`, {waitUntil: 'networkidle2'});
+      try {
 
-      // render all the lazy loaded content in the page from infinite scroll
-      let previousHeight;
-      while (true) {
-        try {
-          previousHeight = await this.page.evaluate('document.body.scrollHeight');
-          await this.page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
-          await this.page.waitForFunction(`document.body.scrollHeight > ${previousHeight}`);
-        } catch (e) {
-          console.log('Scrolled to end of donation feed');
-          break;
+        await this.launchBrowser();
+        await this.loginIfRequired();
+
+        // load donation page
+        await this.page.goto(`https://www.facebook.com/donate/${facebookFundraiserId}/${donationId}`, {waitUntil: 'networkidle2'});
+
+        // render all the lazy loaded content in the page from infinite scroll
+        let previousHeight;
+        while (true) {
+          try {
+            previousHeight = await this.page.evaluate('document.body.scrollHeight');
+            await this.page.evaluate('window.scrollTo(0, document.body.scrollHeight)');
+            await this.page.waitForFunction(`document.body.scrollHeight > ${previousHeight}`);
+          } catch (e) {
+            console.log('Scrolled to end of donation feed');
+            break;
+          }
         }
+
+        // trick donation id links to appear
+        console.log('trick donation id links to appear');
+        await this.page.waitForXPath('//div[@role=\'feed\']/div[position()>2]');
+        const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role=\'feed\']/div[position()>2]');
+        for (let i = 0; i < facebookDonationElems.length; i++) {
+          await facebookDonationElems[i].click(); // scroll to element
+          await this.captureExactDateTime(facebookDonationElems, i);
+        }
+
+        // get reactions to appear
+        console.log('getting reactions to appear');
+        await this.page.waitForXPath(`//a[contains(@href, \"${donationId}\") and parent::span]`);
+        const [reactButtonElem]: ElementHandle[] = await this.page.$x(`//a[contains(@href, \"${donationId}\") and parent::span]/parent::span/parent::span/parent::span/parent::span/parent::div/parent::div/parent::div/parent::div/parent::div/following-sibling::div[2]/div/div/div/div/div[2]/div/div/div`);
+        await reactButtonElem.evaluate(selector => selector.scrollIntoView());
+        await reactButtonElem.focus();
+        await reactButtonElem.hover();
+        await this.page.waitForXPath('//canvas[@width=39]');
+
+        // click reaction
+        console.log('clicking reaction');
+        switch (reaction) {
+          case 'Like':
+            const [likeButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Like\"]');
+            await likeButton.click();
+            break;
+          case 'Love':
+            const [loveButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Love\"]');
+            await loveButton.click();
+            break;
+          case 'Care':
+            const [careButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Care\"]');
+            await careButton.click();
+            break;
+          case 'Haha':
+            const [hahaButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Haha\"]');
+            await hahaButton.click();
+            break;
+          case 'Wow':
+            const [wowButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Wow\"]');
+            await wowButton.click();
+            break;
+          case 'Sad':
+            const [sadButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Sad\"]');
+            await sadButton.click();
+            break;
+          case 'Angry':
+            const [angryButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Angry\"]');
+            await angryButton.click();
+            break;
+        }
+
+        console.log('scrape complete');
+        await this.browser.close();
+        return true;
+
+      } catch (err) {
+
+        console.log(err);
+        return true;
+
       }
 
-      // trick donation id links to appear
-      console.log('trick donation id links to appear');
-      await this.page.waitForXPath('//div[@role=\'feed\']/div[position()>2]');
-      const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role=\'feed\']/div[position()>2]');
-      for (let i=0; i<facebookDonationElems.length; i++) {
-        await facebookDonationElems[i].click(); // scroll to element
-        await this.captureExactDateTime(facebookDonationElems, i);
-      }
-
-      // get reactions to appear
-      console.log('getting reactions to appear');
-      await this.page.waitForXPath(`//a[contains(@href, \"${donationId}\") and parent::span]`);
-      const [reactButtonElem]: ElementHandle[] = await this.page.$x(`//a[contains(@href, \"${donationId}\") and parent::span]/parent::span/parent::span/parent::span/parent::span/parent::div/parent::div/parent::div/parent::div/parent::div/following-sibling::div[2]/div/div/div/div/div[2]/div/div/div`);
-      await reactButtonElem.evaluate(selector => selector.scrollIntoView());
-      await reactButtonElem.focus();
-      await reactButtonElem.hover();
-      await this.page.waitForXPath('//canvas[@width=39]');
-
-      // click reaction
-      console.log('clicking reaction');
-      switch (reaction) {
-        case 'Like':
-          const [likeButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Like\"]');
-          await likeButton.click();
-          break;
-        case 'Love':
-          const [loveButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Love\"]');
-          await loveButton.click();
-          break;
-        case 'Care':
-          const [careButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Care\"]');
-          await careButton.click();
-          break;
-        case 'Haha':
-          const [hahaButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Haha\"]');
-          await hahaButton.click();
-          break;
-        case 'Wow':
-          const [wowButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Wow\"]');
-          await wowButton.click();
-          break;
-        case 'Sad':
-          const [sadButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Sad\"]');
-          await sadButton.click();
-          break;
-        case 'Angry':
-          const [angryButton] = await this.page.$x('//canvas[@width=39]/parent::div/parent::div/parent::div[@aria-label=\"Angry\"]');
-          await angryButton.click();
-          break;
-      }
-
-      console.log('scrape complete');
-      await this.browser.close();
-      return true;
     })();
   }
 
@@ -318,10 +346,12 @@ export class ScrapeFacebookFundraiserController {
   }
 
   private async captureNameAmount(donationElems: ElementHandle[], i: number): Promise<string> {
-    return await this.page.waitForXPath('.//span[contains(., \'donated £\')]', { timeout: 1000 }).then(() => {
+    return await this.page.waitForXPath('.//span[contains(., \'donated £\')]', { timeout: 2000 }).then(() => {
       return (async () => {
         const [facebookDonationNameAmount]: ElementHandle[] = await donationElems[i].$x('.//span[contains(., \'donated £\')]');
-        const nameAmount: string = await this.page.evaluate(el => el.textContent, facebookDonationNameAmount);
+        const nameAmount: string = await this.page.evaluate(el => {
+          return el !== undefined ? el.textContent : 'undefined';
+        }, facebookDonationNameAmount);
         return new Promise<string>(resolve => {
           resolve(nameAmount);
         });
@@ -335,6 +365,7 @@ export class ScrapeFacebookFundraiserController {
         const [donationIdElem]: ElementHandle[] = await donationElems[i].$x('.//a[contains(@href, \"donate\")]');
         await donationIdElem.focus();
         let donationId = await this.page.evaluate(el => el.getAttribute('href'), donationIdElem);
+        console.log('donationId', donationId);
         donationId = parseInt(donationId.split(/\?/gi)[0].split(/\//gi).pop());
         return new Promise<number>(resolve => {
           resolve(donationId);
@@ -378,7 +409,7 @@ export class ScrapeFacebookFundraiserController {
         await this.page.waitForXPath('//span[@role=\'tooltip\']/div/div/span');
         await this.page.waitForTimeout(300);
         const [facebookDonationExactDate] = await donationElems[i].$x('//span[@role=\'tooltip\']/div/div/span');
-        const exactDateTimeEval: string = await this.page.evaluate(el => el.innerHTML, facebookDonationExactDate);
+        const exactDateTimeEval: string = await this.page.evaluate(el => el?.innerHTML, facebookDonationExactDate);
         console.log('exactDateTimeEval:', exactDateTimeEval);
         // convert date string
         const d: number = parseInt(exactDateTimeEval.split(/[\s,:]+/gi)[1]);
@@ -428,7 +459,7 @@ interface FacebookProgressCard {
 }
 
 interface FacebookDonation {
-  id: number;
+  id?: number;
   name: string;
   currency: string;
   amount: number;
