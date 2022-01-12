@@ -26,8 +26,8 @@ export class HowLongToBeatController {
     constructor(@inject(RestBindings.Http.REQUEST) private req: Request) {
     }
 
-    @post('/howlongtobeat/search/{queryString}')
-    postSearch(
+    @get('/howlongtobeat/search/{queryString}')
+    getSearch(
         @param.path.string('queryString', {
             description: 'queryString'
         }) queryString: string,
@@ -53,7 +53,7 @@ export class HowLongToBeatController {
 
     @get('/howlongtobeat/detail/{gameId}')
     getDetail(
-        @param.query.string('gameId', {
+        @param.path.string('gameId', {
             description: 'gameId'
         }) gameId: string,
     ): object {
@@ -66,7 +66,7 @@ export class HowLongToBeatController {
 
             // Scrape page and return result
             let howLongToBeatGameDetail: HowLongToBeatGameDetail = {
-                id: null,
+                id: gameId,
                 title: null,
                 boxArt: null,
                 titleGameTimes: [],
@@ -99,6 +99,15 @@ export class HowLongToBeatController {
                 })();
             });
 
+            // boxArt
+            await this.page.waitForXPath('//div[contains(@class, "game_image")]/img').then(() => {
+                return (async () => {
+                    const [boxArtElemHandle] = await this.page.$x('//div[contains(@class, "game_image")]/img');
+                    const _boxArt: string = await this.page.evaluate(el => el.src, boxArtElemHandle);
+                    howLongToBeatGameDetail.boxArt = HowLongToBeatController.replaceAll(_boxArt);
+                })();
+            });
+
             // title game times
             await this.page.waitForXPath('//*[@class="game_times"]/ul/li').then(() => {
                 return (async () => {
@@ -128,37 +137,43 @@ export class HowLongToBeatController {
             });
 
             // additional content
-            await this.page.waitForXPath('//*[@class="in scrollable back_primary shadow_box"]/table').then(() => {
-                return (async () => {
-                    const additionalContentTableElemHandle = await this.page.$x('//*[@class="in scrollable back_primary shadow_box"]/table');
-                    for (let i = 0; i < additionalContentTableElemHandle.length; i++) {
-                        const additionalContentRowElemHandle = await additionalContentTableElemHandle[i].$x('.//tbody/tr');
-                        for (let j = 0; j < additionalContentRowElemHandle.length; j++) {
-                            const _additionalContent: HowLongToBeatGameAdditionalContent = {
-                                id: '',
-                                title: '',
-                                polled: '',
-                                rated: '',
-                                main: '',
-                                mainPlus: '',
-                                hundredPercent: '',
-                                all: ''
-                            };
-                            const additionalContentCellElemHandle = await additionalContentRowElemHandle[j].$x('.//td');
-                            const _id: string = await this.page.evaluate(el => el.children[0]?.href, additionalContentCellElemHandle[0]);
-                            _additionalContent.id = HowLongToBeatController.replaceAll(_id).match(/\d+/g)![0];
-                            _additionalContent.title = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[0]));
-                            _additionalContent.polled = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[1]));
-                            _additionalContent.rated = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[2]));
-                            _additionalContent.main = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[3]));
-                            _additionalContent.mainPlus = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[4]));
-                            _additionalContent.hundredPercent = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[5]));
-                            _additionalContent.all = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[6]));
-                            howLongToBeatGameDetail.additionalContent.push(_additionalContent);
+            try {
+                await this.page.waitForXPath('//*[@class="in scrollable back_primary shadow_box"]/table', {timeout: 5000}).then(() => {
+                    return (async () => {
+                        const additionalContentTableElemHandle = await this.page.$x('//*[@class="in scrollable back_primary shadow_box"]/table');
+                        if (additionalContentTableElemHandle.length >= 1) {
+                            for (let i = 0; i < additionalContentTableElemHandle.length; i++) {
+                                const additionalContentRowElemHandle = await additionalContentTableElemHandle[i].$x('.//tbody/tr');
+                                for (let j = 0; j < additionalContentRowElemHandle.length; j++) {
+                                    const _additionalContent: HowLongToBeatGameAdditionalContent = {
+                                        id: '',
+                                        title: '',
+                                        polled: '',
+                                        rated: '',
+                                        main: '',
+                                        mainPlus: '',
+                                        hundredPercent: '',
+                                        all: ''
+                                    };
+                                    const additionalContentCellElemHandle = await additionalContentRowElemHandle[j].$x('.//td');
+                                    const _id: string = await this.page.evaluate(el => el.children[0]?.href, additionalContentCellElemHandle[0]);
+                                    _additionalContent.id = HowLongToBeatController.replaceAll(_id).match(/\d+/g)![0];
+                                    _additionalContent.title = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[0]));
+                                    _additionalContent.polled = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[1]));
+                                    _additionalContent.rated = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[2]));
+                                    _additionalContent.main = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[3]));
+                                    _additionalContent.mainPlus = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[4]));
+                                    _additionalContent.hundredPercent = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[5]));
+                                    _additionalContent.all = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[6]));
+                                    howLongToBeatGameDetail.additionalContent.push(_additionalContent);
+                                }
+                            }
                         }
-                    }
-                })();
-            });
+                    })();
+                });
+            } catch (err) {
+                console.log('Game has no additional content. ', err);
+            }
 
             // game times
             await this.page.waitForXPath('//table[@class="game_main_table"]').then(() => {
@@ -311,12 +326,12 @@ export interface HowLongToBeatSearchResult {
     id: string;
     title: string;
     boxArt: string;
-    timeLabels: string[],
-    gameplayMain: string,
-    gameplayMainExtra: string,
-    gameplayCompletionist: string,
-    similarity: number,
-    searchTerm: string
+    timeLabels: string[];
+    gameplayMain: string;
+    gameplayMainExtra: string;
+    gameplayCompletionist: string;
+    similarity: number;
+    searchTerm: string;
 }
 
 export interface HowLongToBeatGameDetail {
@@ -343,8 +358,8 @@ export interface HowLongToBeatGameAdditionalContent {
 }
 
 export interface TimeLabel {
-    label: string,
-    time: string
+    label: string;
+    time: string;
 }
 
 export interface HowLongToBeatGameDetailInfo {
@@ -358,6 +373,6 @@ export interface HowLongToBeatGameDetailInfo {
         NA: string|null;
         EU: string|null;
         JP: string|null;
-    }
+    };
     updated: string|null;
 }
