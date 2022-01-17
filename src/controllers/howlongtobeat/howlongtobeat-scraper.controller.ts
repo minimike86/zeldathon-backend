@@ -3,14 +3,11 @@ import {
     Request,
     RestBindings,
     get,
-    post,
-    requestBody,
     param
 } from '@loopback/rest';
 
 const puppeteer = require('puppeteer');
-// @ts-ignore
-import {Browser, ElementHandle, Page, SetCookie} from 'puppeteer';
+import {Browser, ElementHandle, Page} from 'puppeteer';
 const imageDataURI = require('image-data-uri');
 
 
@@ -38,15 +35,27 @@ export class HowLongToBeatController {
             // load search_results
             await this.page.goto(this.BASE_URL, {waitUntil: 'networkidle2'});
             await this.acceptCookieWarning();
-
             // Search for the game and return first 20 results
             await this.searchForGame(`${queryString}`);
             await this.page.waitForXPath('//*[@id="global_search_content"]/*[2]/*[@class="back_darkish"]').then(async () => {
+
                 this.totalResults = await this.getTotalResults();
-                this.searchResults = await this.parsePageResults(`${queryString}`);
+                this.searchResults.push(...await this.parsePageResults(`${queryString}`));
+
+                const pageElemHandlers: ElementHandle[] = await this.page.$x('//h2/strong[contains(text(),"Page")]/../span');
+                for (let i = 1; i < pageElemHandlers.length; i++) {
+
+                    console.log(`clicking button: array[${i}], actual [${await this.page.evaluate(el => el.textContent, pageElemHandlers[i])}]`);
+                    await this.page.evaluate(elem => (elem as HTMLElement).click(), pageElemHandlers[i]);
+                    await this.page.waitForTimeout(400);
+
+                    this.searchResults.push(...await this.parsePageResults(`${queryString}`));
+                }
+
             });
 
             await this.browser.close();
+            console.log('searchResults: ', this.searchResults.length);
             return this.searchResults;
         })();
     }
@@ -73,9 +82,9 @@ export class HowLongToBeatController {
                 detail: {
                     description1: null,
                     description2: null,
-                    platforms: null,
-                    genres: null,
-                    developer: null,
+                    platforms: [],
+                    genres: [],
+                    developer: [],
                     publisher: null,
                     releases: {
                         NA: null,
@@ -95,7 +104,7 @@ export class HowLongToBeatController {
                 return (async () => {
                     const [titleElemHandle] = await this.page.$x('//*[@class="profile_header shadow_text"]');
                     const _title: string = await this.page.evaluate(el => el.textContent, titleElemHandle);
-                    howLongToBeatGameDetail.title = HowLongToBeatController.replaceAll(_title);
+                    howLongToBeatGameDetail.title = HowLongToBeatController.replaceAllTabsNewLines(_title);
                 })();
             });
 
@@ -104,7 +113,7 @@ export class HowLongToBeatController {
                 return (async () => {
                     const [boxArtElemHandle] = await this.page.$x('//div[contains(@class, "game_image")]/img');
                     const _boxArt: string = await this.page.evaluate(el => el.src, boxArtElemHandle);
-                    howLongToBeatGameDetail.boxArt = HowLongToBeatController.replaceAll(_boxArt);
+                    howLongToBeatGameDetail.boxArt = HowLongToBeatController.replaceAllTabsNewLines(_boxArt);
                 })();
             });
 
@@ -131,14 +140,89 @@ export class HowLongToBeatController {
                 return (async () => {
                     const [readMoreElemHandle] = await this.page.$x('//*[@id="profile_summary_more"]');
                     await readMoreElemHandle?.click({delay: 10});
-                    const [detailElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]');
-                    howLongToBeatGameDetail.detail = await this.page.evaluate(el => el.textContent, detailElemHandle);
+
+                    const detailElemHandle = await this.page.$x('//div[contains(@class, "profile_info")]');
+                    const description1Str: string = await this.page.evaluate(el => el.textContent, detailElemHandle[0]);
+                    howLongToBeatGameDetail.detail.description1 = HowLongToBeatController.replaceAllTabsNewLines(description1Str);
+
+                    try {
+                        const description2Str: string = await this.page.evaluate(el => el.textContent, detailElemHandle[1]);
+                        howLongToBeatGameDetail.detail.description2 = HowLongToBeatController.replaceAllTabsNewLines(description2Str);
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.description2 = null;
+                    }
+
+                    const [platformElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "Platform:") or contains(text(), "Platforms:")]/..');
+                    const platformStr: string = await this.page.evaluate(el => el.textContent, platformElemHandle);
+                    howLongToBeatGameDetail.detail.platforms = HowLongToBeatController.replaceAllTabsNewLines(platformStr)
+                                                                                      .replace(/Platform[s]{0,1}:/g, '')
+                                                                                      .split(',')
+                                                                                      .map(platform => platform.trim());
+
+                    try {
+                        const [genreElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "Genre:") or contains(text(), "Genres:")]/..');
+                        const genreStr: string = await this.page.evaluate(el => el.textContent, genreElemHandle);
+                        howLongToBeatGameDetail.detail.genres = HowLongToBeatController.replaceAllTabsNewLines(genreStr)
+                                                                                       .replace(/Genre[s]{0,1}:/g, '')
+                                                                                       .split(',')
+                                                                                       .map(genre => genre.trim());
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.genres = null;
+                    }
+
+                    try {
+                        const [developerElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "Developer:") or contains(text(), "Developers:")]/..');
+                        const developerStr: string = await this.page.evaluate(el => el.textContent, developerElemHandle);
+                        howLongToBeatGameDetail.detail.developer = HowLongToBeatController.replaceAllTabsNewLines(developerStr)
+                                                                                          .replace(/Developer[s]{0,1}:/g, '')
+                                                                                          .split(',')
+                                                                                          .map(developer => developer.trim());
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.releases.NA = null;
+                    }
+
+                    const [publisherElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "Publisher:") or contains(text(), "Publishers:")]/..');
+                    const publisherStr: string = await this.page.evaluate(el => el.textContent, publisherElemHandle);
+                    howLongToBeatGameDetail.detail.publisher = HowLongToBeatController.replaceAllTabsNewLines(publisherStr)
+                                                                                      .replace(/Publisher[s]{0,1}:/g, '');
+
+                    try {
+                        const [naElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "NA:")]/..');
+                        const naStr: string = await this.page.evaluate(el => el.textContent, naElemHandle);
+                        howLongToBeatGameDetail.detail.releases.NA = HowLongToBeatController.replaceAllTabsNewLines(naStr)
+                                                                                            .replace(/NA:/g, '');
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.releases.NA = null;
+                    }
+
+                    try {
+                        const [euElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "EU:")]/..');
+                        const euStr: string = await this.page.evaluate(el => el.textContent, euElemHandle);
+                        howLongToBeatGameDetail.detail.releases.EU = HowLongToBeatController.replaceAllTabsNewLines(euStr)
+                                                                                            .replace(/EU:/g, '');
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.releases.EU = null;
+                    }
+
+                    try {
+                        const [jpElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "JP:")]/..');
+                        const jpStr: string = await this.page.evaluate(el => el.textContent, jpElemHandle);
+                        howLongToBeatGameDetail.detail.releases.JP = HowLongToBeatController.replaceAllTabsNewLines(jpStr)
+                                                                                            .replace(/JP:/g, '');
+                    } catch (err) {
+                        howLongToBeatGameDetail.detail.releases.JP = null;
+                    }
+
+                    const [updatedElemHandle] = await this.page.$x('//div[contains(@class, "profile_info")]/.//*[contains(text(), "Updated:")]/..');
+                    const updatedStr: string = await this.page.evaluate(el => el.textContent, updatedElemHandle);
+                    howLongToBeatGameDetail.detail.updated = HowLongToBeatController.replaceAllTabsNewLines(updatedStr)
+                                                                                    .replace(/Updated:/g, '');
                 })();
             });
 
             // additional content
             try {
-                await this.page.waitForXPath('//*[@class="in scrollable back_primary shadow_box"]/table', {timeout: 5000}).then(() => {
+                await this.page.waitForXPath('//*[@class="in scrollable back_primary shadow_box"]/table', {timeout: 100}).then(() => {
                     return (async () => {
                         const additionalContentTableElemHandle = await this.page.$x('//*[@class="in scrollable back_primary shadow_box"]/table');
                         if (additionalContentTableElemHandle.length >= 1) {
@@ -157,14 +241,14 @@ export class HowLongToBeatController {
                                     };
                                     const additionalContentCellElemHandle = await additionalContentRowElemHandle[j].$x('.//td');
                                     const _id: string = await this.page.evaluate(el => el.children[0]?.href, additionalContentCellElemHandle[0]);
-                                    _additionalContent.id = HowLongToBeatController.replaceAll(_id).match(/\d+/g)![0];
-                                    _additionalContent.title = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[0]));
-                                    _additionalContent.polled = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[1]));
-                                    _additionalContent.rated = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[2]));
-                                    _additionalContent.main = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[3]));
-                                    _additionalContent.mainPlus = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[4]));
-                                    _additionalContent.hundredPercent = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[5]));
-                                    _additionalContent.all = HowLongToBeatController.replaceAll(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[6]));
+                                    _additionalContent.id = HowLongToBeatController.replaceAllTabsNewLines(_id).match(/\d+/g)![0];
+                                    _additionalContent.title = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[0]));
+                                    _additionalContent.polled = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[1]));
+                                    _additionalContent.rated = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[2]));
+                                    _additionalContent.main = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[3]));
+                                    _additionalContent.mainPlus = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[4]));
+                                    _additionalContent.hundredPercent = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[5]));
+                                    _additionalContent.all = HowLongToBeatController.replaceAllTabsNewLines(await this.page.evaluate(el => el.textContent, additionalContentCellElemHandle[6]));
                                     howLongToBeatGameDetail.additionalContent.push(_additionalContent);
                                 }
                             }
@@ -181,17 +265,17 @@ export class HowLongToBeatController {
                     const [gameTimesTableExists] = await this.page.$x('//table[@class="game_main_table"]/thead/tr/td[contains(text(),"Single-Player")]/../../..');
                     if (gameTimesTableExists) {
                         const _gameTimes: string = await this.page.evaluate(el => el.outerHTML, gameTimesTableExists);
-                        howLongToBeatGameDetail.gameTimes = HowLongToBeatController.replaceAll(_gameTimes);
+                        howLongToBeatGameDetail.gameTimes = HowLongToBeatController.replaceAllTabsNewLines(_gameTimes);
                     }
                     const [speedrunTableExists] = await this.page.$x('//table[@class="game_main_table"]/thead/tr/td[contains(text(),"Speedrun")]/../../..');
                     if (speedrunTableExists) {
                         const _speedRunTimes: string = await this.page.evaluate(el => el.outerHTML, speedrunTableExists);
-                        howLongToBeatGameDetail.speedRunTimes = HowLongToBeatController.replaceAll(_speedRunTimes);
+                        howLongToBeatGameDetail.speedRunTimes = HowLongToBeatController.replaceAllTabsNewLines(_speedRunTimes);
                     }
                     const [platformTableExists] = await this.page.$x('//table[@class="game_main_table"]/thead/tr/td[contains(text(),"Platform")]/../../..');
                     if (platformTableExists) {
                         const _platformTimes: string = await this.page.evaluate(el => el.outerHTML, platformTableExists);
-                        howLongToBeatGameDetail.platformTimes = HowLongToBeatController.replaceAll(_platformTimes);
+                        howLongToBeatGameDetail.platformTimes = HowLongToBeatController.replaceAllTabsNewLines(_platformTimes);
                     }
                 })();
             });
@@ -201,12 +285,12 @@ export class HowLongToBeatController {
         })();
     }
 
-    private static replaceAll(str: string): string {
+    private static replaceAllTabsNewLines(str: string): string {
         return str.replace(/\n/g, '').replace(/\t/g, '');
     }
 
     private async launchBrowser() {
-        this.browser = await puppeteer.launch({headless: false});
+        this.browser = await puppeteer.launch({headless: true});
         const context = this.browser.defaultBrowserContext();
         await context.overridePermissions("https://howlongtobeat.com/", []);
         this.page = await this.browser.newPage();
@@ -365,9 +449,9 @@ export interface TimeLabel {
 export interface HowLongToBeatGameDetailInfo {
     description1: string|null;
     description2: string|null;
-    platforms: string|null;
-    genres: string|null;
-    developer: string|null;
+    platforms: string[]|null;
+    genres: string[]|null;
+    developer: string[]|null;
     publisher: string|null;
     releases: {
         NA: string|null;

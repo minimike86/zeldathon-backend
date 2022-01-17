@@ -1,21 +1,9 @@
-import {inject} from '@loopback/core';
-import {
-  Request,
-  RestBindings,
-  get,
-  post,
-  param
-} from '@loopback/rest';
-
+import { inject } from '@loopback/core';
+import { Request, RestBindings, get, post, param } from '@loopback/rest';
 const puppeteer = require('puppeteer');
-// @ts-ignore
-import {BoundingBox, Browser, ElementHandle, Page, SetCookie} from 'puppeteer';
-
+import { BoundingBox, Browser, ElementHandle, Page } from 'puppeteer';
 const imageDataURI = require('image-data-uri');
-
 import * as fs from 'fs';
-import config from './facebook-config.json';
-import cookiesJson from './facebook-cookies.json';
 
 
 /**
@@ -23,10 +11,17 @@ import cookiesJson from './facebook-cookies.json';
  */
 export class FacebookFundraiserController {
 
+  public configJsonFile = 'src/controllers/facebook-fundraiser/facebook-config.json';
+  public facebookConfig: FacebookConfig;
+  public cookiesJsonFile = 'src/controllers/facebook-fundraiser/facebook-cookies.json';
+  public cookiesJson: SetCookie[] = [];
+
   public browser: Browser;
   public page: Page;
 
   constructor(@inject(RestBindings.Http.REQUEST) private req: Request) {
+    this.facebookConfig = JSON.parse(fs.readFileSync(this.configJsonFile).toString());
+    this.cookiesJson = JSON.parse(fs.readFileSync(this.cookiesJsonFile).toString());
   }
 
   @get('/facebook/fundraiser/{facebookFundraiserId}')
@@ -48,10 +43,7 @@ export class FacebookFundraiserController {
         await this.page.goto(`https://www.facebook.com/donate/${facebookFundraiserId}/`, {waitUntil: 'networkidle2'});
 
         // get progress_card
-        const progressCard = await this.getProgressCard();
-
-        // get uniqueDonorCount
-        const uniqueDonorCount: number = await this.getUniqueDonorCount();
+        const progressCard: FacebookProgressCard = await this.getProgressCard();
 
         // render all the lazy loaded content in the page from infinite scroll
         let previousHeight;
@@ -69,15 +61,15 @@ export class FacebookFundraiserController {
         // get each donation
         const facebookDonations: FacebookDonation[] = [];
 
-        await this.page.waitForXPath('//div[@role=\'feed\']/div[position()>2]', {timeout: 2000});
-        const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role=\'feed\']/div[position()>2]');
+        await this.page.waitForXPath('//div[@role="feed"]/div/.//*[contains(text(), "donated")]/./../../../../../../../..', {timeout: 500});
+        const facebookDonationElems: ElementHandle[] = await this.page.$x('//div[@role="feed"]/div/.//*[contains(text(), "donated")]/./../../../../../../../..');
         console.log(`Grabbing ${facebookDonationElems.length} donations:`);
         for (let i = 0; i < facebookDonationElems.length; i++) {
           await facebookDonationElems[i].click(); // scroll to element
 
           // Capture name and amount div
-          const nameAmount = await this.captureNameAmount(facebookDonationElems, i);
-          const name: string = nameAmount.trim().slice(0, -1).split('donated £')[0];
+          const nameAmount: string = await this.captureNameAmount(facebookDonationElems, i);
+          const name: string|undefined = nameAmount.trim().slice(0, -1).split('donated £')[0];
           const currency: string = 'GBP';
           const amount: number = parseFloat(nameAmount.trim().slice(0, -1).split('donated £')[1]);
           console.log('nameAmount:', nameAmount, name, amount);
@@ -99,7 +91,7 @@ export class FacebookFundraiserController {
           // console.log('donationId:', donationId);
 
           // capture message
-          const donationMessage: string = await this.captureDonationMessage(i);
+          const donationMessage: string = await this.captureDonationMessage(facebookDonationElems, i);
           console.log('donationMessage:', donationMessage);
 
           // push donation date to array
@@ -118,8 +110,8 @@ export class FacebookFundraiserController {
         console.log('scrape complete');
         await this.browser.close();
         return {
+          fundraiserID: facebookFundraiserId,
           progressCard: progressCard,
-          uniqueDonorCount: uniqueDonorCount,
           donations: facebookDonations
         };
 
@@ -127,11 +119,14 @@ export class FacebookFundraiserController {
 
         console.log(err);
         return {
+          fundraiserID: null,
           progressCard: {
             total: 0,
-            goal: 0
+            goal: 0,
+            donated: 0,
+            invited: 0,
+            shared: 0
           },
-          uniqueDonorCount: 0,
           donations: []
         };
 
@@ -251,7 +246,7 @@ export class FacebookFundraiserController {
   }
 
   private async launchBrowser() {
-    this.browser = await puppeteer.launch({headless: false});
+    this.browser = await puppeteer.launch({headless: true});
     const context = this.browser.defaultBrowserContext();
     await context.overridePermissions("https://www.facebook.com", []);
     this.page = await this.browser.newPage();
@@ -264,30 +259,30 @@ export class FacebookFundraiserController {
   }
 
   private async loginIfRequired() {
-    if (!Object.keys(cookiesJson).length) {
+    if (this.cookiesJson.length === 0) {
       await this.page.goto('https://www.facebook.com/login', {waitUntil: 'networkidle2'}); // 855003971855785
       await this.acceptCookieWarning();
-      await this.page.type('#email', config.username, {delay: 30});
-      await this.page.type('#pass', config.password, {delay: 30});
+      await this.page.type('#email', this.facebookConfig.username, {delay: 30});
+      await this.page.type('#pass', this.facebookConfig.password, {delay: 30});
       await this.page.click('#loginbutton');
       await this.page.waitForNavigation({ waitUntil: "networkidle0" });
-      console.log("waiting 1 min for 2fa");
-      await this.page.waitForTimeout(60000);
+      console.log("waiting 30 secs for 2fa");
+      await this.page.waitForTimeout(30000);
       try {
         console.log("testing for profile icon");
-        await this.page.waitForXPath(`//span[contains(., \'${config.name}\')]`);
+        await this.page.waitForXPath(`//span[contains(., \'${this.facebookConfig.name}\')]`);
       } catch (err) {
         console.log("failed to login");
         process.exit(0);
       }
       let currentCookies = await this.page.cookies();
       console.log("saving cookie", currentCookies);
-      await fs.writeFileSync('./facebook-cookies.json', JSON.stringify(currentCookies));
+      await fs.writeFileSync(this.cookiesJsonFile, JSON.stringify(currentCookies));
     } else {
       // User Already Logged In
       const cookies: SetCookie[] = [];
-      for (const cookieJson of cookiesJson) {
-        let tempCookie: SetCookie = {
+      for (const cookieJson of this.cookiesJson) {
+        let tempCookie: any = {
           name: cookieJson.name,
           value: cookieJson.value,
           domain: cookieJson.domain,
@@ -310,48 +305,46 @@ export class FacebookFundraiserController {
 
   private async acceptCookieWarning() {
     // Accept cookie warning banner
-    await this.page.waitForSelector('#consent_cookies_title').then(() => {
+    await this.page.waitForXPath('//button[contains(text(), "Allow All Cookies")]', {timeout: 1000}).then(() => {
       return (async () => {
-        const [cookieConsentButton] = await this.page.$x('//button[contains(., \'Accept All\')]');
-        await cookieConsentButton.click({delay: 100});
+        const [cookieConsentButton] = await this.page.$x('//button[contains(text(), "Allow All Cookies")]');
+        await cookieConsentButton.click({delay: 10});
       })();
     });
   }
 
   private async getProgressCard(): Promise<FacebookProgressCard> {
-    return await this.page.waitForXPath('//span[contains(.,\'£\')]|//span[contains(.,\'of\')]|//span[contains(.,\'raised\')]').then(() => {
+    return await this.page.waitForXPath('//span[contains(text(), "of £") and contains(text(), "raised")]').then(() => {
       return (async () => {
-        const [progressCardSpan] = await this.page.$x('//span[contains(.,\'£\')]|//span[contains(.,\'of\')]|//span[contains(.,\'raised\')]');
-        const progressCardInnerText: string = await this.page.evaluate((el: { textContent: any; }) => el.textContent, progressCardSpan);
+        const [progressCardSpan]: ElementHandle[] = await this.page.$x('//span[contains(text(), "of £") and contains(text(), "raised")]');
+        const progressCardInnerText: string = await this.page.evaluate(el => el.textContent, progressCardSpan);
+
+        const [fundraiserProgressCard]: ElementHandle[] = await this.page.$x('//div[div[contains(@role,"button")]/div/span[contains(text(),"donated") and @dir="auto"]]');
+        const [fpDonatedElementHandle]: ElementHandle[] = await fundraiserProgressCard.$x('.//*[contains(text(),"donated")]/..');
+        const fpDonatedText: string = await this.page.evaluate(el => el.textContent, fpDonatedElementHandle);
+        const [fpInvitedElementHandle]: ElementHandle[] = await fundraiserProgressCard.$x('.//*[contains(text(),"invited")]/..');
+        const fpInvitedText: string = await this.page.evaluate(el => el.textContent, fpInvitedElementHandle);
+        const [fpSharedElementHandle]: ElementHandle[] = await fundraiserProgressCard.$x('.//*[contains(text(),"shared")]/..');
+        const fpSharedText: string = await this.page.evaluate(el => el.textContent, fpSharedElementHandle);
+
         return new Promise<FacebookProgressCard>(resolve => {
           resolve({
-            total: parseFloat(progressCardInnerText.split(' ')[0].replace('£', '').replace(',', '')),
-            goal: parseFloat(progressCardInnerText.split(' ')[2].replace('£', '').replace(',', ''))
+            total: parseFloat(progressCardInnerText.match(/(?!\£)([\d\,]+)(?=\sof)/g)![0].replace(/\,/g, '')),
+            goal: parseFloat(progressCardInnerText.match(/(?!\£)([\d\,]+)(?=\sraised)/g)![0].replace(/\,/g, '')),
+            donated: parseFloat(fpDonatedText.replace(/donated/g, '')),
+            invited: parseFloat(fpInvitedText.replace(/invited/g, '')),
+            shared: parseFloat(fpSharedText.replace(/shared/g, ''))
           });
         });
       })();
     });
   }
 
-  private async getUniqueDonorCount(): Promise<number> {
-    return await this.page.waitForXPath('//span[contains(., \'donated\')]/preceding-sibling::span[1]').then(() => {
-      return (async () => {
-        const [uniqueDonorSpan] = await this.page.$x('//span[contains(., \'donated\')]/preceding-sibling::span[1]');
-        const uniqueDonorSpanInnerText: string = await this.page.evaluate((el: { textContent: any; }) => el.textContent, uniqueDonorSpan);
-        return new Promise<number>(resolve => {
-          resolve(parseInt(uniqueDonorSpanInnerText));
-        });
-      })();
-    });
-  }
-
   private async captureNameAmount(donationElems: ElementHandle[], i: number): Promise<string> {
-    return await this.page.waitForXPath('.//span[contains(., \'donated £\')]', { timeout: 2000 }).then(() => {
+    return await this.page.waitForXPath('.//span[contains(., \'donated £\')]', { timeout: 500 }).then(() => {
       return (async () => {
         const [facebookDonationNameAmount]: ElementHandle[] = await donationElems[i].$x('.//span[contains(., \'donated £\')]');
-        const nameAmount: string = await this.page.evaluate(el => {
-          return el !== undefined ? el.textContent : 'undefined';
-        }, facebookDonationNameAmount);
+        const nameAmount: string = await this.page.evaluate(el => el.textContent, facebookDonationNameAmount);
         return new Promise<string>(resolve => {
           resolve(nameAmount);
         });
@@ -401,13 +394,12 @@ export class FacebookFundraiserController {
   }
 
   private async captureExactDateTime(donationElems: ElementHandle[], i: number): Promise<Date> {
-    return await this.page.waitForXPath('.//span[contains(., \'donated £\')]/parent::div/parent::div/div[2]/span/span/span[2]/span/a/span/span/span[2]').then(() => {
+    return await this.page.waitForXPath('//div[@role="feed"]/div/.//*[contains(text(), "donated")]/./../../../../../../../.././/*[contains(text(), "donated")]/../../../div[2]/span/span/span[2]/span/a/span/span/span').then(() => {
       return (async () => {
-        const [facebookDonationDate]: ElementHandle[] = await donationElems[i].$x('.//span[contains(., \'donated £\')]/parent::div/parent::div/div[2]/span/span/span[2]/span/a/span/span/span[2]');
+        const [facebookDonationDate]: ElementHandle[] = await donationElems[i].$x('./../../../../../../../.././/*[contains(text(), "donated")]/../../../div[2]/span/span/span[2]/span/a/span/span/span');
         const boundingBox = await facebookDonationDate.boundingBox();
         if (boundingBox) await this.page.mouse.move(boundingBox.x, boundingBox.y);
-        await this.page.waitForXPath('//span[@role=\'tooltip\']/div/div/span');
-        await this.page.waitForTimeout(300);
+        await this.page.waitForXPath('//span[@role=\'tooltip\']/div/div/span', {timeout: 500});
         const [facebookDonationExactDate] = await donationElems[i].$x('//span[@role=\'tooltip\']/div/div/span');
         const exactDateTimeEval: string = await this.page.evaluate(el => el?.innerHTML, facebookDonationExactDate);
         console.log('exactDateTimeEval:', exactDateTimeEval);
@@ -433,22 +425,29 @@ export class FacebookFundraiserController {
     });
   }
 
-  private async captureDonationMessage(i: number): Promise<string> {
-    return await this.page.waitForXPath(`//div[@role=\"feed\"]/div[position()=${i+3}]//span[contains(., \"donated £\")]/parent::div/parent::div/parent::div/parent::div/parent::div/following-sibling::div[1]`).then(() => {
-      return (async () => {
-        let donationMessage: string = '';
-        const [facebookDonationMessage]: ElementHandle[] = await this.page.$x(`//div[@role=\"feed\"]/div[position()=${i+3}]//span[contains(., \"donated £\")]/parent::div/parent::div/parent::div/parent::div/parent::div/following-sibling::div[1]`);
-        const boundingBox: BoundingBox|null = await facebookDonationMessage.boundingBox();
-        // console.log('height: ', await boundingBox?.height);
-        if (boundingBox !== undefined && boundingBox !== null && boundingBox.height > 0) {
-          const donationMessageEval: any = await this.page.evaluate(el => el.textContent, facebookDonationMessage);
-          donationMessage = donationMessageEval;
-        }
-        return new Promise<string>(resolve => {
-          resolve(donationMessage);
-        });
-      })();
-    });
+  private async captureDonationMessage(donationElems: ElementHandle[], i: number): Promise<string> {
+    try {
+      return await this.page.waitForXPath('//div[@role="feed"]/div/.//*[contains(text(), "donated")]/./../../../.././/div[@dir="auto" and not(contains(@style, "text-align"))]', {timeout:500}).then(() => {
+        return (async () => {
+          let donationMessage: string = '';
+          const [facebookDonationMessage]: ElementHandle[] = await donationElems[i].$x('.//div[@dir="auto" and not(contains(@style, "text-align"))]');
+          const boundingBox: BoundingBox|null = await facebookDonationMessage.boundingBox();
+          // console.log('height: ', await boundingBox?.height);
+          if (boundingBox !== undefined && boundingBox !== null && boundingBox.height > 0) {
+            const donationMessageEval: any = await this.page.evaluate(el => el.textContent, facebookDonationMessage);
+            donationMessage = donationMessageEval;
+          }
+          return new Promise<string>(resolve => {
+            resolve(donationMessage);
+          });
+        })();
+      });
+    } catch (err) {
+      // console.log('Donation has no message. ', err);
+      return new Promise<string>(resolve => {
+        resolve('');
+      });
+    }
   }
 
 }
@@ -456,6 +455,9 @@ export class FacebookFundraiserController {
 interface FacebookProgressCard {
   total: number;
   goal: number;
+  donated: number;
+  invited: number;
+  shared: number;
 }
 
 interface FacebookDonation {
@@ -469,3 +471,19 @@ interface FacebookDonation {
   message: string;
 }
 
+interface FacebookConfig {
+  username: string;
+  password: string;
+  name: string;
+}
+
+interface SetCookie {
+  name: any;
+  value: any;
+  domain: any;
+  path: any;
+  expires: any;
+  httpOnly: any;
+  session: any;
+  secure: any;
+}
