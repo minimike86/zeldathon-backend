@@ -52,9 +52,10 @@
     "@loopback/core": "^2.14.0",
     "@loopback/repository": "^3.4.0",
     "@loopback/rest": "^9.1.2",
-    "@loopback/rest-explorer": "^3.0.6",
+    "@loopback/rest-explorer": "^4.0.1",
     "@loopback/service-proxy": "^3.0.6",
-    "image-data-uri": "^2.0.1",
+    "image-data-uri": "^1.0.0",
+    "moment": "^2.29.1",
     "puppeteer": "^13.0.1",
     "tslib": "^2.0.0"
   },

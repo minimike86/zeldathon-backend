@@ -102,3 +102,8 @@ dist
 
 # TernJS port file
 .tern-port
+/facebook-cookies.json
+/src/__tests__/
+/src/__tests__/
+test-results/
+playwright-report/
